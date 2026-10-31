@@ -1,0 +1,46 @@
+/* Latar belakang utama aplikasi */
+.stApp {
+    background-color: #0b101e;
+    background-image: radial-gradient(circle at 50% 0%, #152238 0%, #0b101e 75%);
+    color: #e0f2fe;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* Kustomisasi Header */
+h1, h2, h3 {
+    background: -webkit-linear-gradient(45deg, #00f2fe, #4facfe);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 700;
+}
+
+/* Sidebar styling */
+[data-testid="stSidebar"] {
+    background-color: #111827;
+    border-right: 1px solid #1e293b;
+}
+
+/* Kustomisasi Tombol Utama */
+div.stButton > button {
+    background: linear-gradient(90deg, #00c6ff 0%, #0072ff 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-weight: bold;
+    box-shadow: 0 4px 15px rgba(0, 114, 255, 0.4);
+    transition: all 0.3s ease;
+}
+
+div.stButton > button:hover {
+    box-shadow: 0 6px 20px rgba(0, 114, 255, 0.6);
+    transform: translateY(-2px);
+    color: white;
+}
+
+/* Styling notifikasi dan kotak informasi */
+div.stAlert {
+    background-color: rgba(30, 41, 59, 0.7);
+    border: 1px solid #38bdf8;
+    color: #bae6fd;
+}
