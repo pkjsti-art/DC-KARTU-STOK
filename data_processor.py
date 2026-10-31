@@ -8,7 +8,6 @@ def process_data(file):
     # 1. Cleaning Data & Deteksi Header Dinamis
     header_idx = -1
     for idx, row in df_raw.iterrows():
-        # Modifikasi: menggunakan list comprehension untuk mencegah error float/NaN
         row_str = " ".join([str(val).lower() for val in row])
         if 'tanggal' in row_str and 'qty' in row_str:
             header_idx = idx
@@ -37,6 +36,10 @@ def process_data(file):
     df['Status'] = ""
     df['Kode_Trx'] = df['Keterangan'].str.extract(r'((?:MOV|MB)/[A-Za-z0-9/]+)')
     
+    # Membuat kolom bantu nilai absolut khusus untuk pencocokan agar tanda minus diabaikan
+    if 'Qty' in df.columns:
+        df['Qty_Match'] = df['Qty'].abs()
+    
     # Flagging jenis transaksi
     ket_lower = df['Keterangan'].str.lower().fillna("")
     df['Is_MOV_In'] = ket_lower.str.contains('mov') & ket_lower.str.contains('penambahan')
@@ -45,17 +48,18 @@ def process_data(file):
     df['Is_Target_Out'] = df['Is_MB_Out'] | df['Is_MOV_Out']
 
     # 3. Crosscheck Data
-    # Mengelompokkan berdasarkan nilai Qty yang unik
-    unique_qtys = df[df['Is_MOV_In'] | df['Is_Target_Out']]['Qty'].dropna().unique()
+    # Mengelompokkan berdasarkan nilai Qty_Match (absolut) yang unik
+    unique_qtys = df[df['Is_MOV_In'] | df['Is_Target_Out']]['Qty_Match'].dropna().unique()
     
     for qty in unique_qtys:
-        # Index dari transaksi penambahan dan pengeluaran dengan Qty yang sama
-        idx_in = df[(df['Is_MOV_In']) & (df['Qty'] == qty)].index.tolist()
-        idx_out = df[(df['Is_Target_Out']) & (df['Qty'] == qty)].index.tolist()
+        # Index dari transaksi penambahan dan pengeluaran dengan Qty absolut yang sama
+        idx_in = df[(df['Is_MOV_In']) & (df['Qty_Match'] == qty)].index.tolist()
+        idx_out = df[(df['Is_Target_Out']) & (df['Qty_Match'] == qty)].index.tolist()
         
         # Skenario: Qty match tidak ada sama sekali
         if not idx_out:
-            df.loc[idx_in, 'Status'] = "MOV Belum MB / Not Match"
+            for idx in idx_in:
+                df.loc[idx, 'Status'] = "MOV Belum MB / Not Match"
             continue
         if not idx_in:
             for idx in idx_out:
@@ -105,7 +109,7 @@ def process_data(file):
                 df.loc[idx, 'Status'] = "MOV Pengurangan Not Match"
 
     # 4. Finalisasi Output
-    kolom_drop = ['Tanggal_Parsed', 'Kode_Trx', 'Is_MOV_In', 'Is_MB_Out', 'Is_MOV_Out', 'Is_Target_Out']
+    kolom_drop = ['Tanggal_Parsed', 'Kode_Trx', 'Is_MOV_In', 'Is_MB_Out', 'Is_MOV_Out', 'Is_Target_Out', 'Qty_Match']
     df = df.drop(columns=[col for col in kolom_drop if col in df.columns])
     
     return df
