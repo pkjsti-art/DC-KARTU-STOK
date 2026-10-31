@@ -8,7 +8,8 @@ def process_data(file):
     # 1. Cleaning Data & Deteksi Header Dinamis
     header_idx = -1
     for idx, row in df_raw.iterrows():
-        row_str = " ".join(row.astype(str).str.lower())
+        # Modifikasi: menggunakan list comprehension untuk mencegah error float/NaN
+        row_str = " ".join([str(val).lower() for val in row])
         if 'tanggal' in row_str and 'qty' in row_str:
             header_idx = idx
             break
