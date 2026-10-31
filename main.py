@@ -16,7 +16,7 @@ def local_css(file_name):
         with open(file_name) as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
     except Exception:
-        pass # Mengabaikan jika file css tidak ditemukan sementara
+        pass
 
 local_css("style.css")
 
@@ -41,31 +41,36 @@ with st.sidebar:
     
     proses_btn = st.button("🚀 Proses Data")
 
-# Logika Proses Data
-if uploaded_file is not None:
+# Reset session state jika file baru diunggah atau dihapus
+if uploaded_file is None:
+    if 'df_result' in st.session_state:
+        del st.session_state['df_result']
+    st.info("👈 Silakan unggah data di sidebar untuk memulai.")
+else:
+    # Logika Proses Data saat tombol diklik
     if proses_btn:
         with st.spinner("Memproses sinkronisasi data..."):
             try:
-                # Memanggil logika dari data_processor.py
-                df_result = process_data(uploaded_file)
-                
-                # Menampilkan Hasil
-                st.success("✅ Proses Crosscheck Selesai!")
-                st.subheader("📋 Tabel Hasil Cek Data")
-                
-                # Menampilkan tabel interaktif (Bisa difilter, di-sort, view fullscreen di pojok kanan atas tabel)
-                st.dataframe(df_result, use_container_width=True, height=600)
-                
-                # Tombol Download
-                excel_data = to_excel(df_result)
-                st.download_button(
-                    label="📥 Download Data Hasil Crosscheck",
-                    data=excel_data,
-                    file_name="Hasil_Crosscheck_Kartu_Stok.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
+                # Simpan hasil ke session_state agar tidak hilang saat reload
+                st.session_state['df_result'] = process_data(uploaded_file)
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses data: {e}")
-else:
-    st.info("👈 Silakan unggah data di sidebar untuk memulai.")
+
+    # Menampilkan hasil jika ada di session_state
+    if 'df_result' in st.session_state:
+        st.success("✅ Proses Crosscheck Selesai!")
+        st.subheader("📋 Tabel Hasil Cek Data")
+        
+        df_result = st.session_state['df_result']
+        
+        # Menampilkan tabel interaktif
+        st.dataframe(df_result, use_container_width=True, height=600)
+        
+        # Tombol Download
+        excel_data = to_excel(df_result)
+        st.download_button(
+            label="📥 Download Data Hasil Crosscheck",
+            data=excel_data,
+            file_name="Hasil_Crosscheck_Kartu_Stok.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
