@@ -3,6 +3,7 @@ import pandas as pd
 from io import BytesIO
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.hyperlink import Hyperlink
 from data_processor import (
     process_data,
     deteksi_jenis_transaksi,
@@ -65,10 +66,14 @@ WARNA_STATUS_EXCEL = {
 
 
 def warnai_tabel_web(row):
-    """Memberi warna latar per baris (jenis MOV/MB) dan warna khusus pada kolom Status."""
+    """Memberi warna latar per baris (jenis MOV/MB), penegasan ID Match, dan warna khusus kolom Status."""
     jenis = deteksi_jenis_transaksi(row.get("Keterangan", ""))
     gaya_baris = WARNA_BARIS_WEB.get(jenis, WARNA_BARIS_WEB["LAINNYA"])
     gaya_sel = [gaya_baris] * len(row)
+
+    if "ID Match" in row.index and str(row["ID Match"]).strip():
+        posisi_id = row.index.get_loc("ID Match")
+        gaya_sel[posisi_id] = f"{gaya_baris} font-weight: bold; text-align: center;"
 
     if "Status" in row.index:
         kategori_status = deteksi_kategori_status(row["Status"])
@@ -92,41 +97,59 @@ def format_angka_tampil(val):
         return val
 
 
-def to_excel_berwarna(df):
-    """Mengonversi hasil crosscheck ke file Excel (.xlsx) lengkap dengan warna baris, warna status, dan format angka."""
+def to_excel_berwarna(df, link_targets=None):
+    """
+    Mengonversi hasil crosscheck ke file Excel (.xlsx) lengkap dengan:
+    - Warna baris (jenis transaksi) & warna sel Status
+    - Hyperlink internal antar-baris pada kolom Status
+    - Kolom ID Match yang rapi & rata tengah
+    - Format angka murni, freeze header, dan auto-filter
+    """
+    if link_targets is None:
+        link_targets = {}
+
+    sheet_name = "Hasil_Crosscheck"
     output = BytesIO()
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Hasil_Crosscheck")
-        ws = writer.sheets["Hasil_Crosscheck"]
+        df.to_excel(writer, index=False, sheet_name=sheet_name)
+        ws = writer.sheets[sheet_name]
 
         # Gaya dasar
         header_fill = PatternFill(start_color="1E293B", end_color="1E293B", fill_type="solid")
         header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
         font_normal = Font(name="Calibri", size=10, color="0F172A")
+        font_id_match = Font(name="Calibri", size=10, bold=True, color="0F172A")
+        align_center = Alignment(horizontal="center", vertical="center")
         thin_side = Side(border_style="thin", color="CBD5E1")
         cell_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
 
         # Cari indeks kolom penting (berbasis 1 untuk openpyxl)
         kolom_list = list(df.columns)
         idx_col_status = kolom_list.index("Status") + 1 if "Status" in kolom_list else -1
+        idx_col_id_match = kolom_list.index("ID Match") + 1 if "ID Match" in kolom_list else -1
         idx_col_keterangan = kolom_list.index("Keterangan") + 1 if "Keterangan" in kolom_list else -1
+        status_col_letter = get_column_letter(idx_col_status) if idx_col_status != -1 else "A"
 
         # 1. Styling Baris Header
         for col_idx in range(1, len(kolom_list) + 1):
             cell = ws.cell(row=1, column=col_idx)
             cell.fill = header_fill
             cell.font = header_font
-            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.alignment = align_center
             cell.border = cell_border
         ws.row_dimensions[1].height = 24
 
-        # 2. Styling Setiap Baris Data
-        for row_num, (_, row_data) in enumerate(df.iterrows(), start=2):
+        # 2. Styling Setiap Baris Data & Pemasangan Hyperlink
+        for row_pos, (_, row_data) in enumerate(df.iterrows()):
+            row_num = row_pos + 2  # Baris 1 adalah header Excel
             jenis = deteksi_jenis_transaksi(row_data.get("Keterangan", ""))
             kode_warna_baris = WARNA_BARIS_EXCEL.get(jenis, "FFFFFF")
             row_fill = PatternFill(start_color=kode_warna_baris, end_color=kode_warna_baris, fill_type="solid")
 
-            kategori_status = deteksi_kategori_status(row_data.get("Status", ""))
+            status_teks = str(row_data.get("Status", "")) if pd.notna(row_data.get("Status", "")) else ""
+            id_match_teks = str(row_data.get("ID Match", "")) if pd.notna(row_data.get("ID Match", "")) else ""
+            kategori_status = deteksi_kategori_status(status_teks)
 
             for col_idx in range(1, len(kolom_list) + 1):
                 cell = ws.cell(row=row_num, column=col_idx)
@@ -135,7 +158,43 @@ def to_excel_berwarna(df):
                 if col_idx == idx_col_status and kategori_status in WARNA_STATUS_EXCEL:
                     bg_status, fg_status = WARNA_STATUS_EXCEL[kategori_status]
                     cell.fill = PatternFill(start_color=bg_status, end_color=bg_status, fill_type="solid")
-                    cell.font = Font(name="Calibri", size=10, bold=True, color=fg_status)
+
+                    # Pasang hyperlink internal jika baris memiliki target lompatan
+                    if row_pos in link_targets:
+                        target_excel_row = int(link_targets[row_pos]) + 2
+                        if status_teks.startswith("Match Rekap"):
+                            tooltip_text = (
+                                f"Lompat ke pecahan pertama (Baris {target_excel_row}). "
+                                f"Filter ID Match '{id_match_teks}' untuk melihat semua pasangannya."
+                            )
+                        elif kategori_status == "DUPLIKAT":
+                            tooltip_text = (
+                                f"Lompat ke transaksi referensi (Baris {target_excel_row}). "
+                                f"Filter ID Match '{id_match_teks}' untuk membandingkan grupnya."
+                            )
+                        else:
+                            tooltip_text = f"Klik untuk lompat ke pasangan (Baris {target_excel_row})"
+
+                        cell.hyperlink = Hyperlink(
+                            ref=cell.coordinate,
+                            location=f"{sheet_name}!{status_col_letter}{target_excel_row}",
+                            tooltip=tooltip_text,
+                        )
+                        cell.font = Font(
+                            name="Calibri",
+                            size=10,
+                            bold=True,
+                            color=fg_status,
+                            underline="single",
+                        )
+                    else:
+                        cell.font = Font(name="Calibri", size=10, bold=True, color=fg_status)
+
+                elif col_idx == idx_col_id_match:
+                    cell.fill = row_fill
+                    cell.font = font_id_match
+                    cell.alignment = align_center
+
                 else:
                     cell.fill = row_fill
                     cell.font = font_normal
@@ -148,8 +207,11 @@ def to_excel_berwarna(df):
             if not sampel.empty:
                 panjang_maks = max(panjang_maks, int(sampel.str.len().max()))
 
-            batas_lebar = 55 if col_idx in (idx_col_status, idx_col_keterangan) else 28
-            ws.column_dimensions[col_letter].width = min(panjang_maks + 4, batas_lebar)
+            if col_idx == idx_col_id_match:
+                ws.column_dimensions[col_letter].width = max(12, panjang_maks + 3)
+            else:
+                batas_lebar = 55 if col_idx in (idx_col_status, idx_col_keterangan) else 28
+                ws.column_dimensions[col_letter].width = min(panjang_maks + 4, batas_lebar)
 
         # 4. Freeze Header & Aktifkan Auto-Filter
         ws.freeze_panes = "A2"
@@ -210,34 +272,37 @@ with st.sidebar:
 
 # Reset session state jika file dihapus atau berganti file baru
 if uploaded_file is None:
-    if "df_result" in st.session_state:
-        del st.session_state["df_result"]
-    if "file_signature" in st.session_state:
-        del st.session_state["file_signature"]
+    for key in ("df_result", "link_targets", "file_signature"):
+        if key in st.session_state:
+            del st.session_state[key]
     st.info("👈 Silakan unggah data kartu stok di sidebar untuk memulai.")
 else:
     signature_sekarang = f"{uploaded_file.name}_{uploaded_file.size}"
     if st.session_state.get("file_signature") != signature_sekarang:
         st.session_state["file_signature"] = signature_sekarang
-        if "df_result" in st.session_state:
-            del st.session_state["df_result"]
+        for key in ("df_result", "link_targets"):
+            if key in st.session_state:
+                del st.session_state[key]
 
     # Logika Proses Data saat tombol diklik
     if proses_btn:
-        with st.spinner("Memproses sinkronisasi 1:1, match rekap berlapis, dan deteksi duplikat..."):
+        with st.spinner("Memproses sinkronisasi 1:1, match rekap berlapis, ID Match, dan deteksi duplikat..."):
             try:
-                st.session_state["df_result"] = process_data(
+                df_hasil, peta_link = process_data(
                     uploaded_file,
                     aktifkan_rekap=aktifkan_rekap,
                     max_selisih_hari=max_selisih_hari,
                     max_pecahan=max_pecahan,
                 )
+                st.session_state["df_result"] = df_hasil
+                st.session_state["link_targets"] = peta_link
             except Exception as e:
                 st.error(f"Terjadi kesalahan saat memproses data: {e}")
 
     # Menampilkan hasil jika ada di session_state
     if "df_result" in st.session_state:
         df_result = st.session_state["df_result"]
+        link_targets = st.session_state.get("link_targets", {})
         st.success("✅ Proses Crosscheck Selesai!")
 
         # ----------------------------------------------------------
@@ -271,8 +336,8 @@ else:
                 <span class="legend-badge" style="background:#2e1a47; color:#f3e8ff;">MOV Pengurangan</span>
                 <span class="legend-badge" style="background:#161e2e; color:#cbd5e1;">Transaksi Lainnya</span>
                 <span class="legend-title" style="margin-left:10px;">Status:</span>
-                <span class="legend-badge" style="background:#14532d; color:#86efac;">Match 1:1</span>
-                <span class="legend-badge" style="background:#115e59; color:#5eead4;">Match Rekap / Parsial</span>
+                <span class="legend-badge" style="background:#14532d; color:#86efac;">Match 1:1 (M-xxx)</span>
+                <span class="legend-badge" style="background:#115e59; color:#5eead4;">Match Rekap / Parsial (R-xxx)</span>
                 <span class="legend-badge" style="background:#713f12; color:#fde047;">Indikasi Duplikat</span>
                 <span class="legend-badge" style="background:#7f1d1d; color:#fca5a5;">Not Match</span>
             </div>
@@ -281,8 +346,10 @@ else:
         )
 
         # ----------------------------------------------------------
-        # FILTER CEPAT TAMPILAN TABEL
+        # FILTER CEPAT STATUS & PELACAK GRUP ID MATCH
         # ----------------------------------------------------------
+        col_f1, col_f2 = st.columns([2, 1])
+
         opsi_filter = [
             "Semua Data",
             "Hanya Not Match",
@@ -291,7 +358,17 @@ else:
             "Hanya Match 1:1",
             "Hanya Transaksi Lainnya (Status Kosong)",
         ]
-        pilihan_filter = st.selectbox("🔍 Filter Cepat Tampilan Tabel", opsi_filter, index=0)
+        pilihan_filter = col_f1.selectbox("🔍 Filter Cepat Status", opsi_filter, index=0)
+
+        daftar_id = sorted(
+            [str(x) for x in df_result["ID Match"].dropna().unique() if str(x).strip()]
+        )
+        pilihan_id = col_f2.selectbox(
+            "🏷️ Lacak Grup ID Match",
+            options=["Semua ID"] + daftar_id,
+            index=0,
+            help="Pilih satu ID Match (misal R-001 atau M-005) untuk menampilkan seluruh pasangan dalam satu grup.",
+        )
 
         peta_filter = {
             "Hanya Not Match": "NOT_MATCH",
@@ -301,7 +378,16 @@ else:
             "Hanya Transaksi Lainnya (Status Kosong)": "KOSONG",
         }
 
-        if pilihan_filter == "Semua Data":
+        if pilihan_id != "Semua ID":
+            # Menampilkan seluruh baris dalam grup ID Match yang dipilih agar audit pasangan lengkap
+            df_tampil = df_result[df_result["ID Match"] == pilihan_id]
+            if "Qty" in df_tampil.columns:
+                selisih_grup = df_tampil["Qty"].sum()
+                st.caption(
+                    f"Menampilkan **{len(df_tampil)} baris** untuk grup **{pilihan_id}** "
+                    f"(Netto Qty grup: **{format_angka_tampil(selisih_grup)}**)"
+                )
+        elif pilihan_filter == "Semua Data":
             df_tampil = df_result
         else:
             df_tampil = df_result[kategori_series == peta_filter[pilihan_filter]]
@@ -321,10 +407,10 @@ else:
 
             st.dataframe(styler, use_container_width=True, height=600)
 
-        # Tombol Download (selalu mengunduh seluruh hasil lengkap berwarna)
-        excel_data = to_excel_berwarna(df_result)
+        # Tombol Download (selalu mengunduh seluruh hasil lengkap berwarna + hyperlink Excel)
+        excel_data = to_excel_berwarna(df_result, link_targets)
         st.download_button(
-            label="📥 Download Data Hasil Crosscheck (Excel Berwarna)",
+            label="📥 Download Data Hasil Crosscheck (Excel Berwarna + Hyperlink)",
             data=excel_data,
             file_name="Hasil_Crosscheck_Kartu_Stok.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
