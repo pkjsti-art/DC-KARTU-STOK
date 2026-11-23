@@ -163,9 +163,12 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     Memproses data kartu stok:
     1. Cleaning & Deteksi Header Dinamis
     2. Preparation & Klasifikasi Transaksi
-    3. Tahap 1: Match 1 vs 1 (prioritas selisih tanggal terdekat)
-    4. Tahap 2: Match Rekap 1-to-Many & Many-to-1 (Progressive Date Rings)
-    5. Tahap 3: Deteksi Indikasi Duplikat (dengan referensi kode) & Not Match
+    3. Tahap 1: Match 1 vs 1 (prioritas selisih tanggal terdekat) + ID Match (M-xxx)
+    4. Tahap 2: Match Rekap 1-to-Many & Many-to-1 (Progressive Date Rings) + ID Match (R-xxx)
+    5. Tahap 3: Deteksi Indikasi Duplikat (mewarisi ID Match referensi) & Not Match
+
+    Mengembalikan tuple: (df_hasil, link_targets)
+    - link_targets berupa dictionary {index_baris_asal: index_baris_tujuan} untuk hyperlink Excel.
     """
     if hasattr(file, "seek"):
         file.seek(0)
@@ -213,6 +216,7 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     # ------------------------------------------------------------------
     # 2. PREPARATION DATA
     # ------------------------------------------------------------------
+    df["ID Match"] = ""
     df["Status"] = ""
     df["Kode_Trx"] = df["Keterangan"].astype(str).str.extract(r"((?:MOV|MB)/[A-Za-z0-9/._-]+)")
 
@@ -227,10 +231,14 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     df["Is_MOV_Out"] = df["Jenis_Trx"] == "MOV_OUT"
     df["Is_Target_Out"] = df["Is_MB_Out"] | df["Is_MOV_Out"]
 
-    # Pelacakan baris yang sudah match & riwayat match per Qty (untuk deteksi duplikat di Tahap 3)
+    # Pelacakan baris yang sudah match, peta hyperlink, & riwayat match per Qty
     sudah_match = set()
-    riwayat_match_in = {}   # {qty_int: [(kode_mov_in, info_pasangan), ...]}
-    riwayat_match_out = {}  # {qty_int: [(kode_out, info_pasangan), ...]}
+    link_targets = {}       # {idx_baris_asal: idx_baris_tujuan}
+    riwayat_match_in = {}   # {qty_int: [(idx_mov_in, kode_mov_in, info_pasangan, id_match), ...]}
+    riwayat_match_out = {}  # {qty_int: [(idx_out, kode_out, info_pasangan, id_match), ...]}
+
+    counter_match_1_1 = 0
+    counter_match_rekap = [0]
 
     def ambil_kode(idx):
         kode = df.loc[idx, "Kode_Trx"]
@@ -268,14 +276,23 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
             sudah_match.add(i_in)
             sudah_match.add(i_out)
 
+            counter_match_1_1 += 1
+            id_match = f"M-{counter_match_1_1:03d}"
+
             kode_in = ambil_kode(i_in)
             kode_out = ambil_kode(i_out)
 
+            df.loc[i_in, "ID Match"] = id_match
+            df.loc[i_out, "ID Match"] = id_match
             df.loc[i_in, "Status"] = f"Match dgn {kode_out}"
             df.loc[i_out, "Status"] = f"Match dgn {kode_in}"
 
-            riwayat_match_in.setdefault(qty_int, []).append((kode_in, kode_out))
-            riwayat_match_out.setdefault(qty_int, []).append((kode_out, kode_in))
+            # Catat hyperlink saling lompat 1:1
+            link_targets[i_in] = i_out
+            link_targets[i_out] = i_in
+
+            riwayat_match_in.setdefault(qty_int, []).append((i_in, kode_in, kode_out, id_match))
+            riwayat_match_out.setdefault(qty_int, []).append((i_out, kode_out, kode_in, id_match))
 
     # ------------------------------------------------------------------
     # 4. TAHAP 2: MATCH REKAP 1-TO-MANY & MANY-TO-1 (PROGRESSIVE DATE RINGS)
@@ -325,24 +342,35 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
                 )
 
                 if idx_cocok:
+                    idx_cocok_urut = sorted(idx_cocok)
                     sudah_match.add(idx_induk)
-                    for idx_c in idx_cocok:
+                    for idx_c in idx_cocok_urut:
                         sudah_match.add(idx_c)
 
+                    counter_match_rekap[0] += 1
+                    id_rekap = f"R-{counter_match_rekap[0]:03d}"
+
                     kode_induk = ambil_kode(idx_induk)
-                    daftar_kode_pecahan = [ambil_kode(idx_c) for idx_c in idx_cocok]
+                    daftar_kode_pecahan = [ambil_kode(idx_c) for idx_c in idx_cocok_urut]
                     ringkasan_kode_pecahan = _format_daftar_kode(daftar_kode_pecahan)
 
-                    df.loc[idx_induk, "Status"] = f"Match Rekap ({len(idx_cocok)} trx): {ringkasan_kode_pecahan}"
-                    for idx_c in idx_cocok:
+                    df.loc[idx_induk, "ID Match"] = id_rekap
+                    df.loc[idx_induk, "Status"] = f"Match Rekap ({len(idx_cocok_urut)} trx): {ringkasan_kode_pecahan}"
+                    # Hyperlink baris induk diarahkan ke baris pecahan pertama
+                    link_targets[idx_induk] = idx_cocok_urut[0]
+
+                    for idx_c in idx_cocok_urut:
+                        df.loc[idx_c, "ID Match"] = id_rekap
                         df.loc[idx_c, "Status"] = f"Match Parsial dgn {kode_induk}"
+                        # Setiap baris pecahan melompat balik ke baris induk rekapnya
+                        link_targets[idx_c] = idx_induk
 
                     # Catat induk ke riwayat match agar tetap terdeteksi jika ada duplikat di Tahap 3
-                    info_rekap = f"Rekap {len(idx_cocok)} trx"
+                    info_rekap = f"Rekap {len(idx_cocok_urut)} trx"
                     if induk_adalah_in:
-                        riwayat_match_in.setdefault(target_qty, []).append((kode_induk, info_rekap))
+                        riwayat_match_in.setdefault(target_qty, []).append((idx_induk, kode_induk, info_rekap, id_rekap))
                     else:
-                        riwayat_match_out.setdefault(target_qty, []).append((kode_induk, info_rekap))
+                        riwayat_match_out.setdefault(target_qty, []).append((idx_induk, kode_induk, info_rekap, id_rekap))
 
         for batas_hari in lapisan_hari:
             sisa_in = [i for i in df[(df["Is_MOV_In"]) & (df["Qty_Int"] > 0)].index if i not in sudah_match]
@@ -372,8 +400,10 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     for idx in sisa_mov_in:
         qty_int = int(df.loc[idx, "Qty_Int"])
         if qty_int > 0 and qty_int in riwayat_match_in:
-            kode_ref, pasangan_ref = riwayat_match_in[qty_int][0]
+            idx_ref, kode_ref, pasangan_ref, id_match_ref = riwayat_match_in[qty_int][0]
+            df.loc[idx, "ID Match"] = id_match_ref
             df.loc[idx, "Status"] = f"Indikasi Duplikat dgn {kode_ref} (Match: {pasangan_ref}) / Belum MB"
+            link_targets[idx] = idx_ref
         else:
             df.loc[idx, "Status"] = "MOV Belum MB / Not Match"
 
@@ -382,8 +412,10 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     for idx in sisa_target_out:
         qty_int = int(df.loc[idx, "Qty_Int"])
         if qty_int > 0 and qty_int in riwayat_match_out:
-            kode_ref, pasangan_ref = riwayat_match_out[qty_int][0]
+            idx_ref, kode_ref, pasangan_ref, id_match_ref = riwayat_match_out[qty_int][0]
+            df.loc[idx, "ID Match"] = id_match_ref
             df.loc[idx, "Status"] = f"Indikasi Duplikat dgn {kode_ref} (Match: {pasangan_ref}) / Belum PG"
+            link_targets[idx] = idx_ref
         elif df.loc[idx, "Is_MB_Out"]:
             df.loc[idx, "Status"] = "MB belum di PG / Not Match"
         else:
@@ -405,4 +437,4 @@ def process_data(file, aktifkan_rekap=True, max_selisih_hari=None, max_pecahan=8
     ]
     df = df.drop(columns=[col for col in kolom_bantu if col in df.columns])
 
-    return df
+    return df, link_targets
